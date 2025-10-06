@@ -2,6 +2,19 @@ name: Build (Main)
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'public/**'
+      - '.github/workflows/pr-build.yml'
+      - 'install/friendly-filenames.json'
+      - 'Makefile'
+      - 'index.html'
+      - 'vite.config.ts'
+      - '.npmrc'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
 
 jobs:
   checkout-full-src:
@@ -38,7 +51,7 @@ jobs:
           if [ -d "dae-core" ]; then
             cd dae-core && go mod download -modcacherw && cd ..
           fi
-          find "$GOMODCACHE" -maxdepth 1 ! -name "cache" ! -name "go-mod" -exec rm -rf {} \; || true
+          find "$GOMODCACHE" -maxdepth 1 ! -name "cache" ! -name "go-mod" -exec rm -rf {} \;
           if [ -f Makefile ]; then
             sed -i 's/#export GOMODCACHE=$(PWD)\/go-mod/export GOMODCACHE=$(PWD)\/go-mod/' Makefile || true
           fi
@@ -54,7 +67,6 @@ jobs:
 
   build-web:
     runs-on: ubuntu-latest
-    needs: checkout-full-src
     steps:
       - uses: actions/checkout@v4
         with:
@@ -147,47 +159,29 @@ jobs:
           name: web
           path: dist/
 
-      # ✅ 修复 anytls 缺失问题的关键部分
+      # ==== 新增步骤，确保 wing 子模块 GraphQL 生成正常 ====
+      - name: Prepare Go & GraphQL
+        run: |
+          sudo apt update
+          sudo apt install -y protobuf-compiler gcc g++ make
+          go install github.com/99designs/gqlgen@latest
+          export PATH="$PATH:$(go env GOPATH)/bin"
+          git submodule update --init --recursive
+          cd wing/graphql/service/config/global
+          go generate ./...
+          cd ../../../..
+
       - name: Build Binary Bundle
         run: |
-          set -euo pipefail
           mkdir -p ./bundled/
           export VERSION=${{ steps.get_version.outputs.VERSION }}
           export GOFLAGS="-trimpath -modcacherw"
           export OUTPUT=bundled/${{ steps.get_filename.outputs.BUNDLE_NAME }}
-
-          echo "=== Building for GOOS=${GOOS} GOARCH=${GOARCH} GOARM=${GOARM} GOAMD64=${GOAMD64} ==="
-
-          # 默认关闭 CGO / anytls
-          export CGO_ENABLED=0
-          export ENABLE_ANYTLS=0
-
-          # ✅ 对 amd64 和 arm64 启用 anytls 支持
-          if [ "${GOARCH}" = "amd64" ] || [ "${GOARCH}" = "arm64" ]; then
-            echo "=> Enabling CGO + anytls"
-            sudo apt-get update -y
-            sudo apt-get install -y build-essential ca-certificates
-            export CGO_ENABLED=1
-            export ENABLE_ANYTLS=1
-            if [ "${GOARCH}" = "arm64" ]; then
-              echo "=> Installing aarch64 cross compiler"
-              sudo apt-get install -y gcc-aarch64-linux-gnu
-              export CC=aarch64-linux-gnu-gcc
-            fi
-          fi
-
-          echo "Environment summary:"
-          echo "  CGO_ENABLED=$CGO_ENABLED"
-          echo "  ENABLE_ANYTLS=$ENABLE_ANYTLS"
-          echo "  CC=${CC:-gcc}"
-
-          # 构建
-          make -j$(nproc)
-
-          # 打包附属文件
-          cp ./install/daed.service ./bundled/ || true
-          curl -fsSL -o ./bundled/geoip.dat https://github.com/v2rayA/dist-v2ray-rules-dat/raw/master/geoip.dat
-          curl -fsSL -o ./bundled/geosite.dat https://github.com/v2rayA/dist-v2ray-rules-dat/raw/master/geosite.dat
+          export ENABLE_ANYTLS=1
+          make
+          cp ./install/daed.service ./bundled/
+          curl -L -o ./bundled/geoip.dat https://github.com/v2rayA/dist-v2ray-rules-dat/raw/master/geoip.dat
+          curl -L -o ./bundled/geosite.dat https://github.com/v2rayA/dist-v2ray-rules-dat/raw/master/geosite.dat
 
       - name: Upload artifact - bundle
         uses: actions/upload-artifact@v4
@@ -197,9 +191,8 @@ jobs:
 
       - name: Build Linux Packages
         run: |
-          sudo apt update -y
-          sudo apt install -y libarchive-tools rpm ruby-full build-essential
-          sudo gem install fpm -v 1.15.1 --no-document || true
+          sudo apt install -y libarchive-tools rpm
+          sudo gem install fpm -v 1.15.1
           pushd bundled
           for package_manager in deb rpm; do
             if [ "$package_manager" == "deb" ]; then
@@ -231,9 +224,22 @@ jobs:
           popd || exit 1
           cp bundled/daed-linux-$GOARCH$GOAMD64$GOARM.deb installer-${{ steps.get_filename.outputs.BUNDLE_NAME }}.deb
           cp bundled/daed-linux-$GOARCH$GOAMD64$GOARM.rpm installer-${{ steps.get_filename.outputs.BUNDLE_NAME }}.rpm
-          ls | grep -E ".deb|.rpm"
+          if [ "$ARCH_PACMAN" == 'pacman' ]; then
+            cp bundled/daed-linux-$GOARCH$GOAMD64$GOARM.pacman installer-${{ steps.get_filename.outputs.BUNDLE_NAME }}.pkg.tar.zst
+          fi
+          ls | grep -E ".deb|.rpm|.pkg.tar.zst"
 
       - name: Upload Linux packages
+        if: ${{ env.GOARM != '5' && env.GOARM != '6' && env.GOARCH != 'mips' && env.GOARCH != 'mipsle' && env.GOARCH != 'mips64' && env.GOARCH != 'mips64le' }}
+        uses: nanoufo/action-upload-artifacts-and-release-assets@v2.0
+        with:
+          path: |
+            installer-${{ steps.get_filename.outputs.BUNDLE_NAME }}.deb
+            installer-${{ steps.get_filename.outputs.BUNDLE_NAME }}.rpm
+            installer-${{ steps.get_filename.outputs.BUNDLE_NAME }}.pkg.tar.zst
+
+      - name: Upload Linux packages without Arch Linux package
+        if: ${{  env.GOARCH == 'mips' || env.GOARCH == 'mipsle' || env.GOARCH == 'mips64' || env.GOARCH == 'mips64le' }}
         uses: nanoufo/action-upload-artifacts-and-release-assets@v2.0
         with:
           path: |
