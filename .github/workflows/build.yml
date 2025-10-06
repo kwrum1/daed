@@ -43,7 +43,7 @@ jobs:
           path: dae-wing
           fetch-depth: 0
 
-      - name: Download Go module dependencies
+      - name: Download dependencies
         run: |
           git submodule update --init --recursive
           export GOMODCACHE="${PWD}/go-mod"
@@ -55,17 +55,6 @@ jobs:
           if [ -f Makefile ]; then
             sed -i 's/#export GOMODCACHE=$(PWD)\/go-mod/export GOMODCACHE=$(PWD)\/go-mod/' Makefile || true
           fi
-
-      - name: Generate GraphQL resolver (only x86_64)
-        if: runner.arch == 'X64'
-        run: |
-          sudo apt update
-          sudo apt install -y protobuf-compiler gcc g++ make
-          go install github.com/99designs/gqlgen@latest
-          export PATH="$PATH:$(go env GOPATH)/bin"
-          cd wing/graphql/service/config/global
-          go generate ./...
-          cd ../../../..
 
       - name: Create full source ZIP archive
         run: zip -9vr daed-full-src.zip . -x .git/\*
@@ -110,8 +99,17 @@ jobs:
       fail-fast: false
       matrix:
         goos: [linux]
-        goarch: [amd64, arm64]
+        goarch: [386, riscv64, amd64, arm64, arm, mips, mips64, mipsle, mips64le]
         include:
+          - goos: linux
+            goarch: arm
+            goarm: 7
+          - goos: linux
+            goarch: arm
+            goarm: 6
+          - goos: linux
+            goarch: arm
+            goarm: 5
           - goos: linux
             goarch: amd64
             goamd64: v1
@@ -125,6 +123,7 @@ jobs:
     env:
       GOOS: ${{ matrix.goos }}
       GOARCH: ${{ matrix.goarch }}
+      GOARM: ${{ matrix.goarm }}
       GOAMD64: ${{ matrix.goamd64 }}
 
     steps:
@@ -151,7 +150,7 @@ jobs:
       - name: Get Filename
         id: get_filename
         run: |
-          export _NAME=$(jq ".[\"$GOOS-$GOARCH$GOAMD64\"].friendlyName" -r < install/friendly-filenames.json)
+          export _NAME=$(jq ".[\"$GOOS-$GOARCH$GOARM$GOAMD64\"].friendlyName" -r < install/friendly-filenames.json)
           echo "BUNDLE_NAME=daed-$_NAME" >> $GITHUB_OUTPUT
 
       - name: Download Web Artifact
@@ -160,7 +159,7 @@ jobs:
           name: web
           path: dist/
 
-      - name: Build Binary Bundle (anytls enabled)
+      - name: Build Binary Bundle
         run: |
           mkdir -p ./bundled/
           export VERSION=${{ steps.get_version.outputs.VERSION }}
@@ -184,13 +183,25 @@ jobs:
           sudo gem install fpm -v 1.15.1
           pushd bundled
           for package_manager in deb rpm; do
-            package_arch="$GOARCH"
+            if [ "$package_manager" == "deb" ]; then
+              if [ "$GOARCH" == "arm" ] && [ "$GOARM" == "7" ]; then
+                package_arch="armhf"
+              else
+                package_arch="$GOARCH"
+              fi
+            elif [ "$package_manager" == "rpm" ]; then
+              if [ "$GOARCH" == "arm" ] && [ "$GOARM" == "7" ]; then
+                package_arch="armhfp"
+              else
+                package_arch="$GOARCH"
+              fi
+            fi
             fpm -s dir -t "$package_manager" -a $package_arch --version "${PACKAGE_VERSION}" \
               --url 'https://github.com/daeuniverse/dae' \
               --description "daed, A Modern Dashboard For dae." \
               --maintainer "daed@dae.v2raya.org" \
               --name daed --license 'MIT AGPL' \
-              --package daed-linux-$GOARCH$GOAMD64.$package_manager \
+              --package daed-linux-$GOARCH$GOAMD64$GOARM.$package_manager \
               --after-install ../install/package_after_install.sh \
               --after-remove ../install/package_after_remove.sh \
               ./geoip.dat=/usr/share/daed/geoip.dat \
@@ -199,11 +210,26 @@ jobs:
               ./${{ steps.get_filename.outputs.BUNDLE_NAME }}=/usr/bin/daed
           done
           popd || exit 1
+          cp bundled/daed-linux-$GOARCH$GOAMD64$GOARM.deb installer-${{ steps.get_filename.outputs.BUNDLE_NAME }}.deb
+          cp bundled/daed-linux-$GOARCH$GOAMD64$GOARM.rpm installer-${{ steps.get_filename.outputs.BUNDLE_NAME }}.rpm
+          if [ "$ARCH_PACMAN" == 'pacman' ]; then
+            cp bundled/daed-linux-$GOARCH$GOAMD64$GOARM.pacman installer-${{ steps.get_filename.outputs.BUNDLE_NAME }}.pkg.tar.zst
+          fi
+          ls | grep -E ".deb|.rpm|.pkg.tar.zst"
 
       - name: Upload Linux packages
+        if: ${{ env.GOARM != '5' && env.GOARM != '6' && env.GOARCH != 'mips' && env.GOARCH != 'mipsle' && env.GOARCH != 'mips64' && env.GOARCH != 'mips64le' }}
         uses: nanoufo/action-upload-artifacts-and-release-assets@v2.0
         with:
           path: |
-            bundled/*.deb
-            bundled/*.rpm
-            bundled/*.pkg.tar.zst
+            installer-${{ steps.get_filename.outputs.BUNDLE_NAME }}.deb
+            installer-${{ steps.get_filename.outputs.BUNDLE_NAME }}.rpm
+            installer-${{ steps.get_filename.outputs.BUNDLE_NAME }}.pkg.tar.zst
+
+      - name: Upload Linux packages without Arch Linux package
+        if: ${{  env.GOARCH == 'mips' || env.GOARCH == 'mipsle' || env.GOARCH == 'mips64' || env.GOARCH == 'mips64le' }}
+        uses: nanoufo/action-upload-artifacts-and-release-assets@v2.0
+        with:
+          path: |
+            installer-${{ steps.get_filename.outputs.BUNDLE_NAME }}.deb
+            installer-${{ steps.get_filename.outputs.BUNDLE_NAME }}.rpm
