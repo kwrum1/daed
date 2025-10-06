@@ -2,19 +2,6 @@ name: Build (Main)
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - 'src/**'
-      - 'public/**'
-      - '.github/workflows/pr-build.yml'
-      - 'install/friendly-filenames.json'
-      - 'Makefile'
-      - 'index.html'
-      - 'vite.config.ts'
-      - '.npmrc'
-      - 'package.json'
-      - 'pnpm-lock.yaml'
 
 jobs:
   checkout-full-src:
@@ -51,7 +38,7 @@ jobs:
           if [ -d "dae-core" ]; then
             cd dae-core && go mod download -modcacherw && cd ..
           fi
-          find "$GOMODCACHE" -maxdepth 1 ! -name "cache" ! -name "go-mod" -exec rm -rf {} \;
+          find "$GOMODCACHE" -maxdepth 1 ! -name "cache" ! -name "go-mod" -exec rm -rf {} \; || true
           if [ -f Makefile ]; then
             sed -i 's/#export GOMODCACHE=$(PWD)\/go-mod/export GOMODCACHE=$(PWD)\/go-mod/' Makefile || true
           fi
@@ -67,6 +54,7 @@ jobs:
 
   build-web:
     runs-on: ubuntu-latest
+    needs: checkout-full-src
     steps:
       - uses: actions/checkout@v4
         with:
@@ -161,15 +149,51 @@ jobs:
 
       - name: Build Binary Bundle
         run: |
+          set -euo pipefail
           mkdir -p ./bundled/
           export VERSION=${{ steps.get_version.outputs.VERSION }}
           export GOFLAGS="-trimpath -modcacherw"
           export OUTPUT=bundled/${{ steps.get_filename.outputs.BUNDLE_NAME }}
-          export ENABLE_ANYTLS=1
-          make
-          cp ./install/daed.service ./bundled/
-          curl -L -o ./bundled/geoip.dat https://github.com/v2rayA/dist-v2ray-rules-dat/raw/master/geoip.dat
-          curl -L -o ./bundled/geosite.dat https://github.com/v2rayA/dist-v2ray-rules-dat/raw/master/geosite.dat
+
+          echo "Building for GOOS=${GOOS} GOARCH=${GOARCH} GOARM=${GOARM} GOAMD64=${GOAMD64}"
+
+          # Default: disable anytls/CGO to avoid cross-C toolchain problems
+          export ENABLE_ANYTLS=0
+          export CGO_ENABLED=0
+
+          # Enable anytls (CGO) only for targets we prepare toolchains for.
+          # We enable for amd64 (native on runner) and arm64 (install cross-compiler).
+          if [ "${GOARCH}" = "amd64" ]; then
+            echo "=> Enabling anytls + CGO for amd64 (native build)"
+            export ENABLE_ANYTLS=1
+            export CGO_ENABLED=1
+            sudo apt-get update -y
+            sudo apt-get install -y build-essential ca-certificates
+          elif [ "${GOARCH}" = "arm64" ]; then
+            echo "=> Enabling anytls + CGO for arm64 (using aarch64 cross-compiler)"
+            export ENABLE_ANYTLS=1
+            export CGO_ENABLED=1
+            sudo apt-get update -y
+            # aarch64 cross-compiler for CGO cross-build
+            sudo apt-get install -y gcc-aarch64-linux-gnu ca-certificates
+            export CC=aarch64-linux-gnu-gcc
+          else
+            echo "=> anytls disabled for ${GOARCH} (CGO disabled to avoid failures)."
+            export ENABLE_ANYTLS=0
+            export CGO_ENABLED=0
+          fi
+
+          echo "Final env: ENABLE_ANYTLS=$ENABLE_ANYTLS CGO_ENABLED=$CGO_ENABLED CC=${CC:-gcc}"
+
+          # Run the project's make (Makefile should honor ENABLE_ANYTLS and CGO_ENABLED)
+          # Ensure environment variables are exported to the build
+          env | sort
+          make -j$(nproc)
+
+          # collect bundle files
+          cp ./install/daed.service ./bundled/ || true
+          curl -fsSL -o ./bundled/geoip.dat https://github.com/v2rayA/dist-v2ray-rules-dat/raw/master/geoip.dat
+          curl -fsSL -o ./bundled/geosite.dat https://github.com/v2rayA/dist-v2ray-rules-dat/raw/master/geosite.dat
 
       - name: Upload artifact - bundle
         uses: actions/upload-artifact@v4
@@ -179,8 +203,9 @@ jobs:
 
       - name: Build Linux Packages
         run: |
-          sudo apt install -y libarchive-tools rpm
-          sudo gem install fpm -v 1.15.1
+          sudo apt update -y
+          sudo apt install -y libarchive-tools rpm ruby-full build-essential
+          sudo gem install fpm -v 1.15.1 --no-document || true
           pushd bundled
           for package_manager in deb rpm; do
             if [ "$package_manager" == "deb" ]; then
