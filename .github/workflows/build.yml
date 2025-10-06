@@ -21,13 +21,15 @@ jobs:
   checkout-full-src:
     runs-on: ubuntu-latest
     steps:
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - name: Checkout dae latest
+        uses: actions/checkout@v4
         with:
           go-version: '^1.21'
       - run: go version
       - uses: actions/checkout@v4
         with:
+          repository: daeuniverse/dae
+          ref: main
           submodules: 'recursive'
 
       - name: Download wing vendor
