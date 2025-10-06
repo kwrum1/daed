@@ -34,26 +34,18 @@ jobs:
           ref: main
           submodules: 'recursive'
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Checkout dae-wing
+      - name: Checkout dae-wing latest
         uses: actions/checkout@v4
         with:
           repository: daeuniverse/dae-wing
           ref: main
           path: dae-wing
-          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
 
-      - name: Checkout dae-core
-        uses: actions/checkout@v4
-        with:
-          repository: daeuniverse/dae
-          ref: main
-          path: dae-core
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Download Go dependencies
+      - name: Download dependencies
         run: |
+          git submodule update --init --recursive
           export GOMODCACHE="${PWD}/go-mod"
           go mod download -modcacherw
           if [ -d "dae-core" ]; then
@@ -64,7 +56,7 @@ jobs:
             sed -i 's/#export GOMODCACHE=$(PWD)\/go-mod/export GOMODCACHE=$(PWD)\/go-mod/' Makefile || true
           fi
 
-      - name: Create full source ZIP archive and Signature
+      - name: Create full source ZIP archive
         run: zip -9vr daed-full-src.zip . -x .git/\*
 
       - name: Upload artifact - full source
@@ -89,7 +81,7 @@ jobs:
           cache: pnpm
           node-version: latest
 
-      - name: Build
+      - name: Build Web UI
         run: |
           pnpm install
           pnpm build
@@ -127,30 +119,12 @@ jobs:
           - goos: linux
             goarch: amd64
             goamd64: v3
-          - goos: linux
-            goarch: mips64
-            cgo_enabled: 1
-            cc: mips64-linux-gnuabi64-gcc
-          - goos: linux
-            goarch: mips64le
-            cgo_enabled: 1
-            cc: mips64el-linux-gnuabi64-gcc
-          - goos: linux
-            goarch: mipsle
-            cgo_enabled: 1
-            cc: mipsel-linux-gnu-gcc
-          - goos: linux
-            goarch: mips
-            cgo_enabled: 1
-            cc: mips-linux-gnu-gcc
 
     env:
       GOOS: ${{ matrix.goos }}
       GOARCH: ${{ matrix.goarch }}
       GOARM: ${{ matrix.goarm }}
       GOAMD64: ${{ matrix.goamd64 }}
-      CGO_ENABLED: ${{ matrix.cgo_enabled || 0 }}
-      CC: ${{ matrix.cc }}
 
     steps:
       - name: Set up Go
@@ -158,13 +132,11 @@ jobs:
         with:
           go-version: '^1.21'
 
-      - run: go version
-
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Get the version
+      - name: Get Version
         id: get_version
         run: |
           date=$(git log -1 --format="%cd" --date=short | sed 's/-//g')
@@ -174,35 +146,26 @@ jobs:
           version="unstable-$package_version"
           echo "VERSION=$version" >> $GITHUB_ENV
           echo "PACKAGE_VERSION=$package_version" >> $GITHUB_ENV
-          echo "VERSION=$version" >> $GITHUB_OUTPUT
-          echo "PACKAGE_VERSION=$package_version" >> $GITHUB_OUTPUT
-          echo "Generated package version: $package_version"
 
-      - name: Get the filename
+      - name: Get Filename
         id: get_filename
         run: |
           export _NAME=$(jq ".[\"$GOOS-$GOARCH$GOARM$GOAMD64\"].friendlyName" -r < install/friendly-filenames.json)
-          echo "GOOS: $GOOS, GOARCH: $GOARCH, RELEASE_NAME: $_NAME"
           echo "BUNDLE_NAME=daed-$_NAME" >> $GITHUB_OUTPUT
 
-      - name: Install mips build dependencies
-        if: ${{ startsWith(matrix.goarch, 'mips') }}
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-mips64-linux-gnuabi64 gcc-mips64el-linux-gnuabi64 gcc-mips-linux-gnu gcc-mipsel-linux-gnu
-
-      - name: Download artifact - web
+      - name: Download Web Artifact
         uses: actions/download-artifact@v4
         with:
           name: web
           path: dist/
 
-      - name: make
+      - name: Build Binary Bundle
         run: |
           mkdir -p ./bundled/
           export VERSION=${{ steps.get_version.outputs.VERSION }}
           export GOFLAGS="-trimpath -modcacherw"
           export OUTPUT=bundled/${{ steps.get_filename.outputs.BUNDLE_NAME }}
+          export ENABLE_ANYTLS=1
           make
           cp ./install/daed.service ./bundled/
           curl -L -o ./bundled/geoip.dat https://github.com/v2rayA/dist-v2ray-rules-dat/raw/master/geoip.dat
@@ -214,49 +177,30 @@ jobs:
           name: ${{ steps.get_filename.outputs.BUNDLE_NAME }}
           path: bundled/*
 
-      - name: Smoking test
-        if: matrix.goarch == 'amd64' && matrix.goamd64 == 'v1'
-        run: ./bundled/${{ steps.get_filename.outputs.BUNDLE_NAME }} --version
-
-      - name: Build Linux packages
-        if: ${{ env.GOARM != '5' && env.GOARM != '6' }}
+      - name: Build Linux Packages
         run: |
           sudo apt install -y libarchive-tools rpm
           sudo gem install fpm -v 1.15.1
-          pushd bundled || exit 1
-          if [ "$GOARCH" == 'mips64' ] || [ "$GOARCH" == 'mips64le' ] || [ "$GOARCH" == 'mipsle' ] || [ "$GOARCH" == 'mips' ]; then
-            ARCH_PACMAN=''
-          else
-            ARCH_PACMAN='pacman'
-          fi
-          for package_manager in deb rpm $ARCH_PACMAN; do
-            if [ "$package_manager" == 'pacman' ]; then
-              if [ "$GOARCH" == 'arm' ] && [ "$GOARM" == '7' ]; then
-                package_arch='arm7hf'
-              elif [ "$GOARCH" == 'arm64' ]; then
-                package_arch='aarch64'
+          pushd bundled
+          for package_manager in deb rpm; do
+            if [ "$package_manager" == "deb" ]; then
+              if [ "$GOARCH" == "arm" ] && [ "$GOARM" == "7" ]; then
+                package_arch="armhf"
               else
                 package_arch="$GOARCH"
               fi
-            elif [ "$package_manager" == 'rpm' ]; then
-              if [ "$GOARCH" == 'arm' ] && [ "$GOARM" == '7' ]; then
-                package_arch='armhfp'
-              elif [ "$GOARCH" == 'arm64' ]; then
-                package_arch='aarch64'
-              else
-                package_arch="$GOARCH"
-              fi
-            elif [ "$package_manager" == 'deb' ]; then
-              if [ "$GOARCH" == 'arm' ] && [ "$GOARM" == '7' ]; then
-                package_arch='armhf'
+            elif [ "$package_manager" == "rpm" ]; then
+              if [ "$GOARCH" == "arm" ] && [ "$GOARM" == "7" ]; then
+                package_arch="armhfp"
               else
                 package_arch="$GOARCH"
               fi
             fi
-            echo "Building $package_manager package, version=${PACKAGE_VERSION}"
             fpm -s dir -t "$package_manager" -a $package_arch --version "${PACKAGE_VERSION}" \
-              --url 'https://github.com/daeuniverse/dae' --description "daed, A Modern Dashboard For dae." \
-              --maintainer "daed@dae.v2raya.org" --name daed --license 'MIT AGPL' \
+              --url 'https://github.com/daeuniverse/dae' \
+              --description "daed, A Modern Dashboard For dae." \
+              --maintainer "daed@dae.v2raya.org" \
+              --name daed --license 'MIT AGPL' \
               --package daed-linux-$GOARCH$GOAMD64$GOARM.$package_manager \
               --after-install ../install/package_after_install.sh \
               --after-remove ../install/package_after_remove.sh \
@@ -265,27 +209,4 @@ jobs:
               ./daed.service=/usr/lib/systemd/system/daed.service \
               ./${{ steps.get_filename.outputs.BUNDLE_NAME }}=/usr/bin/daed
           done
-          popd || exit 1
-          cp bundled/daed-linux-$GOARCH$GOAMD64$GOARM.deb installer-${{ steps.get_filename.outputs.BUNDLE_NAME }}.deb
-          cp bundled/daed-linux-$GOARCH$GOAMD64$GOARM.rpm installer-${{ steps.get_filename.outputs.BUNDLE_NAME }}.rpm
-          if [ "$ARCH_PACMAN" == 'pacman' ]; then
-            cp bundled/daed-linux-$GOARCH$GOAMD64$GOARM.pacman installer-${{ steps.get_filename.outputs.BUNDLE_NAME }}.pkg.tar.zst
-          fi
-          ls | grep -E ".deb|.rpm|.pkg.tar.zst"
-
-      - name: Upload Linux packages
-        if: ${{ env.GOARM != '5' && env.GOARM != '6' && env.GOARCH != 'mips' && env.GOARCH != 'mipsle' && env.GOARCH != 'mips64' && env.GOARCH != 'mips64le' }}
-        uses: nanoufo/action-upload-artifacts-and-release-assets@v2.0
-        with:
-          path: |
-            installer-${{ steps.get_filename.outputs.BUNDLE_NAME }}.deb
-            installer-${{ steps.get_filename.outputs.BUNDLE_NAME }}.rpm
-            installer-${{ steps.get_filename.outputs.BUNDLE_NAME }}.pkg.tar.zst
-
-      - name: Upload Linux packages without Arch Linux package
-        if: ${{  env.GOARCH == 'mips' || env.GOARCH == 'mipsle' || env.GOARCH == 'mips64' || env.GOARCH == 'mips64le' }}
-        uses: nanoufo/action-upload-artifacts-and-release-assets@v2.0
-        with:
-          path: |
-            installer-${{ steps.get_filename.outputs.BUNDLE_NAME }}.deb
-            installer-${{ steps.get_filename.outputs.BUNDLE_NAME }}.rpm
+          popd
