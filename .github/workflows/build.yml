@@ -147,6 +147,7 @@ jobs:
           name: web
           path: dist/
 
+      # ✅ 修复 anytls 缺失问题的关键部分
       - name: Build Binary Bundle
         run: |
           set -euo pipefail
@@ -155,42 +156,35 @@ jobs:
           export GOFLAGS="-trimpath -modcacherw"
           export OUTPUT=bundled/${{ steps.get_filename.outputs.BUNDLE_NAME }}
 
-          echo "Building for GOOS=${GOOS} GOARCH=${GOARCH} GOARM=${GOARM} GOAMD64=${GOAMD64}"
+          echo "=== Building for GOOS=${GOOS} GOARCH=${GOARCH} GOARM=${GOARM} GOAMD64=${GOAMD64} ==="
 
-          # Default: disable anytls/CGO to avoid cross-C toolchain problems
-          export ENABLE_ANYTLS=0
+          # 默认关闭 CGO / anytls
           export CGO_ENABLED=0
+          export ENABLE_ANYTLS=0
 
-          # Enable anytls (CGO) only for targets we prepare toolchains for.
-          # We enable for amd64 (native on runner) and arm64 (install cross-compiler).
-          if [ "${GOARCH}" = "amd64" ]; then
-            echo "=> Enabling anytls + CGO for amd64 (native build)"
-            export ENABLE_ANYTLS=1
-            export CGO_ENABLED=1
+          # ✅ 对 amd64 和 arm64 启用 anytls 支持
+          if [ "${GOARCH}" = "amd64" ] || [ "${GOARCH}" = "arm64" ]; then
+            echo "=> Enabling CGO + anytls"
             sudo apt-get update -y
             sudo apt-get install -y build-essential ca-certificates
-          elif [ "${GOARCH}" = "arm64" ]; then
-            echo "=> Enabling anytls + CGO for arm64 (using aarch64 cross-compiler)"
-            export ENABLE_ANYTLS=1
             export CGO_ENABLED=1
-            sudo apt-get update -y
-            # aarch64 cross-compiler for CGO cross-build
-            sudo apt-get install -y gcc-aarch64-linux-gnu ca-certificates
-            export CC=aarch64-linux-gnu-gcc
-          else
-            echo "=> anytls disabled for ${GOARCH} (CGO disabled to avoid failures)."
-            export ENABLE_ANYTLS=0
-            export CGO_ENABLED=0
+            export ENABLE_ANYTLS=1
+            if [ "${GOARCH}" = "arm64" ]; then
+              echo "=> Installing aarch64 cross compiler"
+              sudo apt-get install -y gcc-aarch64-linux-gnu
+              export CC=aarch64-linux-gnu-gcc
+            fi
           fi
 
-          echo "Final env: ENABLE_ANYTLS=$ENABLE_ANYTLS CGO_ENABLED=$CGO_ENABLED CC=${CC:-gcc}"
+          echo "Environment summary:"
+          echo "  CGO_ENABLED=$CGO_ENABLED"
+          echo "  ENABLE_ANYTLS=$ENABLE_ANYTLS"
+          echo "  CC=${CC:-gcc}"
 
-          # Run the project's make (Makefile should honor ENABLE_ANYTLS and CGO_ENABLED)
-          # Ensure environment variables are exported to the build
-          env | sort
+          # 构建
           make -j$(nproc)
 
-          # collect bundle files
+          # 打包附属文件
           cp ./install/daed.service ./bundled/ || true
           curl -fsSL -o ./bundled/geoip.dat https://github.com/v2rayA/dist-v2ray-rules-dat/raw/master/geoip.dat
           curl -fsSL -o ./bundled/geosite.dat https://github.com/v2rayA/dist-v2ray-rules-dat/raw/master/geosite.dat
@@ -237,22 +231,9 @@ jobs:
           popd || exit 1
           cp bundled/daed-linux-$GOARCH$GOAMD64$GOARM.deb installer-${{ steps.get_filename.outputs.BUNDLE_NAME }}.deb
           cp bundled/daed-linux-$GOARCH$GOAMD64$GOARM.rpm installer-${{ steps.get_filename.outputs.BUNDLE_NAME }}.rpm
-          if [ "$ARCH_PACMAN" == 'pacman' ]; then
-            cp bundled/daed-linux-$GOARCH$GOAMD64$GOARM.pacman installer-${{ steps.get_filename.outputs.BUNDLE_NAME }}.pkg.tar.zst
-          fi
-          ls | grep -E ".deb|.rpm|.pkg.tar.zst"
+          ls | grep -E ".deb|.rpm"
 
       - name: Upload Linux packages
-        if: ${{ env.GOARM != '5' && env.GOARM != '6' && env.GOARCH != 'mips' && env.GOARCH != 'mipsle' && env.GOARCH != 'mips64' && env.GOARCH != 'mips64le' }}
-        uses: nanoufo/action-upload-artifacts-and-release-assets@v2.0
-        with:
-          path: |
-            installer-${{ steps.get_filename.outputs.BUNDLE_NAME }}.deb
-            installer-${{ steps.get_filename.outputs.BUNDLE_NAME }}.rpm
-            installer-${{ steps.get_filename.outputs.BUNDLE_NAME }}.pkg.tar.zst
-
-      - name: Upload Linux packages without Arch Linux package
-        if: ${{  env.GOARCH == 'mips' || env.GOARCH == 'mipsle' || env.GOARCH == 'mips64' || env.GOARCH == 'mips64le' }}
         uses: nanoufo/action-upload-artifacts-and-release-assets@v2.0
         with:
           path: |
