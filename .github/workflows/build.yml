@@ -35,6 +35,13 @@ jobs:
           submodules: 'recursive'
           fetch-depth: 0
 
+      - name: Checkout wing and core
+        run: |
+          git clone https://github.com/daeuniverse/dae-wing
+          git clone https://github.com/daeuniverse/dae-core
+          cd dae-wing && git checkout $(curl -s https://api.github.com/repos/daeuniverse/dae-wing/commits/main | jq -r '.sha') && cd ..
+          cd dae-core && git checkout $(curl -s https://api.github.com/repos/daeuniverse/dae/commits/main | jq -r '.sha') && cd ..
+
       - name: Download dependencies
         run: |
           git submodule update --init --recursive
@@ -85,7 +92,7 @@ jobs:
           path: dist
 
   build-bundle:
-    needs: [build-web]
+    needs: [build-web, checkout-full-src]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -151,16 +158,16 @@ jobs:
       - name: Get the version
         id: get_version
         run: |
-          date=$(git log -1 --format="%cd" --date=short | sed 's/-//g')
-          count=$(git rev-list --count HEAD)
-          commit=$(git rev-parse --short HEAD)
-          package_version="${date}r${count}${commit}"
-          version="unstable-$package_version"
-          echo "VERSION=$version" >> $GITHUB_ENV
-          echo "PACKAGE_VERSION=$package_version" >> $GITHUB_ENV
-          echo "VERSION=$version" >> $GITHUB_OUTPUT
-          echo "PACKAGE_VERSION=$package_version" >> $GITHUB_OUTPUT
-          echo "Generated package version: $package_version"
+          DAED_COMMIT=$(git rev-parse --short HEAD)
+          WING_COMMIT=$(cd dae-wing && git rev-parse --short HEAD)
+          CORE_COMMIT=$(cd dae-core && git rev-parse --short HEAD)
+          DATE=$(date +%Y%m%d)
+          PACKAGE_VERSION="${DATE}r${DAED_COMMIT}_wing-${WING_COMMIT}_core-${CORE_COMMIT}"
+          VERSION="daed-${PACKAGE_VERSION}"
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "PACKAGE_VERSION=$PACKAGE_VERSION" >> $GITHUB_ENV
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "PACKAGE_VERSION=$PACKAGE_VERSION" >> $GITHUB_OUTPUT
 
       - name: Get the filename
         id: get_filename
@@ -255,7 +262,6 @@ jobs:
           if [ "$ARCH_PACMAN" == 'pacman' ]; then
             cp bundled/daed-linux-$GOARCH$GOAMD64$GOARM.pacman installer-${{ steps.get_filename.outputs.BUNDLE_NAME }}.pkg.tar.zst
           fi
-          ls | grep -E ".deb|.rpm|.pkg.tar.zst"
 
       - name: Upload Linux packages
         if: ${{ env.GOARM != '5' && env.GOARM != '6' && env.GOARCH != 'mips' && env.GOARCH != 'mipsle' && env.GOARCH != 'mips64' && env.GOARCH != 'mips64le' }}
