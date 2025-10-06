@@ -56,6 +56,19 @@ jobs:
             sed -i 's/#export GOMODCACHE=$(PWD)\/go-mod/export GOMODCACHE=$(PWD)\/go-mod/' Makefile || true
           fi
 
+      - name: Generate GraphQL resolver (x86_64 safe)
+        run: |
+          sudo apt update
+          sudo apt install -y protobuf-compiler gcc g++ make
+          go install github.com/99designs/gqlgen@latest
+          export PATH="$PATH:$(go env GOPATH)/bin"
+          # 使用 Runner 本地架构，避免 exec format error
+          export GOOS=$(go env GOOS)
+          export GOARCH=$(go env GOARCH)
+          cd wing/graphql/service/config/global
+          go generate ./...
+          cd ../../../..
+
       - name: Create full source ZIP archive
         run: zip -9vr daed-full-src.zip . -x .git/\*
 
@@ -158,18 +171,6 @@ jobs:
         with:
           name: web
           path: dist/
-
-      # ==== 新增步骤，确保 wing 子模块 GraphQL 生成正常 ====
-      - name: Prepare Go & GraphQL
-        run: |
-          sudo apt update
-          sudo apt install -y protobuf-compiler gcc g++ make
-          go install github.com/99designs/gqlgen@latest
-          export PATH="$PATH:$(go env GOPATH)/bin"
-          git submodule update --init --recursive
-          cd wing/graphql/service/config/global
-          go generate ./...
-          cd ../../../..
 
       - name: Build Binary Bundle
         run: |
