@@ -209,4 +209,27 @@ jobs:
               ./daed.service=/usr/lib/systemd/system/daed.service \
               ./${{ steps.get_filename.outputs.BUNDLE_NAME }}=/usr/bin/daed
           done
-          popd
+          popd || exit 1
+          cp bundled/daed-linux-$GOARCH$GOAMD64$GOARM.deb installer-${{ steps.get_filename.outputs.BUNDLE_NAME }}.deb
+          cp bundled/daed-linux-$GOARCH$GOAMD64$GOARM.rpm installer-${{ steps.get_filename.outputs.BUNDLE_NAME }}.rpm
+          if [ "$ARCH_PACMAN" == 'pacman' ]; then
+            cp bundled/daed-linux-$GOARCH$GOAMD64$GOARM.pacman installer-${{ steps.get_filename.outputs.BUNDLE_NAME }}.pkg.tar.zst
+          fi
+          ls | grep -E ".deb|.rpm|.pkg.tar.zst"
+
+      - name: Upload Linux packages
+        if: ${{ env.GOARM != '5' && env.GOARM != '6' && env.GOARCH != 'mips' && env.GOARCH != 'mipsle' && env.GOARCH != 'mips64' && env.GOARCH != 'mips64le' }}
+        uses: nanoufo/action-upload-artifacts-and-release-assets@v2.0
+        with:
+          path: |
+            installer-${{ steps.get_filename.outputs.BUNDLE_NAME }}.deb
+            installer-${{ steps.get_filename.outputs.BUNDLE_NAME }}.rpm
+            installer-${{ steps.get_filename.outputs.BUNDLE_NAME }}.pkg.tar.zst
+
+      - name: Upload Linux packages without Arch Linux package
+        if: ${{  env.GOARCH == 'mips' || env.GOARCH == 'mipsle' || env.GOARCH == 'mips64' || env.GOARCH == 'mips64le' }}
+        uses: nanoufo/action-upload-artifacts-and-release-assets@v2.0
+        with:
+          path: |
+            installer-${{ steps.get_filename.outputs.BUNDLE_NAME }}.deb
+            installer-${{ steps.get_filename.outputs.BUNDLE_NAME }}.rpm
